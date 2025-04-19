@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 13%;
+    --foreground: 0 0% 95%;
+
+    --card: 0 0% 18%;
+    --card-foreground: 0 0% 95%;
+
+    --popover: 0 0% 18%;
+    --popover-foreground: 0 0% 95%;
+
+    --primary: 142 70% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 90% 50%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 0 0% 25%;
+    --muted-foreground: 0 0% 70%;
+
+    --accent: 0 0% 25%;
+    --accent-foreground: 0 0% 95%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 0 0% 25%;
+    --input: 0 0% 25%;
+    --ring: 142 70% 45%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 0 0% 10%;
+    --sidebar-foreground: 0 0% 90%;
+    --sidebar-primary: 142 70% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 15%;
+    --sidebar-accent-foreground: 0 0% 90%;
+    --sidebar-border: 0 0% 20%;
+    --sidebar-ring: 142 70% 45%;
+    
+    /* Dartboard colors */
+    --dartboard-black: 0 0% 0%;
+    --dartboard-white: 0 0% 100%;
+    --dartboard-green: 142 70% 45%;
+    --dartboard-red: 0 90% 50%;
+    --dartboard-bullseye: 0 90% 50%;
+    --dartboard-outer-bull: 142 70% 45%;
+  }
+
+  .dark {
+    --background: 0 0% 13%;
+    --foreground: 0 0% 95%;
+
+    --card: 0 0% 18%;
+    --card-foreground: 0 0% 95%;
+
+    --popover: 0 0% 18%;
+    --popover-foreground: 0 0% 95%;
+
+    --primary: 142 70% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 90% 50%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 0 0% 25%;
+    --muted-foreground: 0 0% 70%;
+
+    --accent: 0 0% 25%;
+    --accent-foreground: 0 0% 95%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 0 0% 25%;
+    --input: 0 0% 25%;
+    --ring: 142 70% 45%;
+
+    --sidebar-background: 0 0% 10%;
+    --sidebar-foreground: 0 0% 90%;
+    --sidebar-primary: 142 70% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 15%;
+    --sidebar-accent-foreground: 0 0% 90%;
+    --sidebar-border: 0 0% 20%;
+    --sidebar-ring: 142 70% 45%;
+    
+    /* Dartboard colors */
+    --dartboard-black: 0 0% 0%;
+    --dartboard-white: 0 0% 100%;
+    --dartboard-green: 142 70% 45%;
+    --dartboard-red: 0 90% 50%;
+    --dartboard-bullseye: 0 90% 50%;
+    --dartboard-outer-bull: 142 70% 45%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
