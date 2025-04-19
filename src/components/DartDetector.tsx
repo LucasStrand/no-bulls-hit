@@ -36,17 +36,110 @@ interface DartDetectorProps {
 
 const WS_URL = 'wss://localhost:8081'; // Changed to wss:// - Connect to the secure local relay server
 
-// Function to find the dart tip (simplistic: highest y-value)
+// Function to find the dart tip (point furthest from contour centroid)
 const findDartTip = (contour: cv.Mat): Point | null => {
   if (!contour || contour.rows === 0) return null;
-  let tip = { x: 0, y: -1 }; // Initialize y low
+
+  // Calculate moments to find centroid
+  const M = cv.moments(contour, false);
+  if (M.m00 === 0) return null; // Avoid division by zero if area is 0
+
+  const cX = M.m10 / M.m00;
+  const cY = M.m01 / M.m00;
+
+  let furthestPoint: Point | null = null;
+  let maxDistanceSq = -1;
+
+  // Iterate through contour points to find the one furthest from the centroid
   for (let i = 0; i < contour.rows; ++i) {
     const point = { x: contour.data32S[i * 2], y: contour.data32S[i * 2 + 1] };
-    if (point.y > tip.y) { // Find point with highest y (lowest on screen)
-      tip = point;
+    const dx = point.x - cX;
+    const dy = point.y - cY;
+    const distanceSq = dx * dx + dy * dy;
+
+    if (distanceSq > maxDistanceSq) {
+      maxDistanceSq = distanceSq;
+      furthestPoint = point;
     }
   }
-  return tip.y !== -1 ? tip : null;
+
+  return furthestPoint;
+};
+
+// --- Scoring Logic ---
+
+// Define segment scores in standard dartboard order (clockwise from top)
+const segmentScores = [
+  20, 1, 18, 4, 13, 6, 10, 15, 2, 17,
+  3, 19, 7, 16, 8, 11, 14, 9, 12, 5
+];
+
+// Define radii for the different scoring rings (in pixels, for 500x500 target)
+// These might need fine-tuning based on the specific board image/warp
+const radii = {
+  doubleBull: 8,    // Radius of the inner bullseye (50 points)
+  singleBull: 20,   // Radius of the outer bullseye (25 points)
+  innerTriple: 120, // Inner radius of the triple ring
+  outerTriple: 135, // Outer radius of the triple ring
+  innerDouble: 200, // Inner radius of the double ring
+  outerDouble: 215, // Outer radius of the double ring (edge of scoring area)
+};
+
+// Center of the 500x500 board
+const boardCenterX = CALIBRATION_TARGET_SIZE / 2;
+const boardCenterY = CALIBRATION_TARGET_SIZE / 2;
+
+const getScoreFromCoords = (point: Point | null): { score: number; confidence: number } => {
+  if (!point) {
+    return { score: 0, confidence: 0 }; // No point detected
+  }
+
+  const dx = point.x - boardCenterX;
+  const dy = point.y - boardCenterY;
+  const distanceFromCenter = Math.sqrt(dx * dx + dy * dy);
+
+  // --- Bullseye Check ---
+  if (distanceFromCenter <= radii.doubleBull) {
+    return { score: 50, confidence: 1.0 }; // Double Bull
+  }
+  if (distanceFromCenter <= radii.singleBull) {
+    return { score: 25, confidence: 1.0 }; // Single Bull
+  }
+
+  // --- Outside Board Check ---
+  if (distanceFromCenter > radii.outerDouble) {
+    return { score: 0, confidence: 1.0 }; // Outside scoring area
+  }
+
+  // --- Segment Calculation ---
+  // Calculate angle relative to the top (0 degrees = 12 o'clock pointing up)
+  // atan2 returns angle in radians from -PI to PI. We adjust it to be 0 to 2*PI, 
+  // with 0 degrees pointing upwards (along negative Y axis in typical coordinate systems).
+  let angleRad = Math.atan2(-dy, dx); // Note: -dy because Y increases downwards
+  if (angleRad < 0) {
+    angleRad += 2 * Math.PI; // Map to 0 - 2*PI range
+  }
+  // Adjust so 0 is straight up (12 o'clock), instead of right (3 o'clock)
+  angleRad = (angleRad + Math.PI / 2) % (2 * Math.PI);
+
+  // Convert to degrees (0-360), where 0 is top center
+  const angleDeg = angleRad * (180 / Math.PI);
+
+  // Determine the segment index (each segment is 18 degrees)
+  // Offset by -9 degrees so the segment boundaries (0, 18, 36, ...) align correctly
+  const segmentIndex = Math.floor((angleDeg + 9) % 360 / 18);
+  const baseScore = segmentScores[segmentIndex];
+
+  // --- Multiplier Check ---
+  if (distanceFromCenter >= radii.innerDouble) {
+    return { score: baseScore * 2, confidence: 1.0 }; // Double ring
+  }
+  if (distanceFromCenter >= radii.innerTriple && distanceFromCenter <= radii.outerTriple) {
+    return { score: baseScore * 3, confidence: 1.0 }; // Triple ring
+  }
+
+  // --- Single Segment ---
+  return { score: baseScore, confidence: 1.0 }; // Single segment
 };
 
 const DartDetector: React.FC<DartDetectorProps> = ({ onDetectionUpdate }) => {
@@ -59,8 +152,12 @@ const DartDetector: React.FC<DartDetectorProps> = ({ onDetectionUpdate }) => {
   const prevWarpedFrameRef = useRef<cv.Mat | null>(null); // <<< Store previous warped frame
   const stillFrameBeforeDartRef = useRef<cv.Mat | null>(null); // <<< RENAMED: Store the confirmed still frame BEFORE the dart
   const stillFrameAfterDartRef = useRef<cv.Mat | null>(null); // <<< ADDED: Store the confirmed still frame AFTER the dart
+  const lastDetectionTimeRef = useRef<number>(0); // <<< ADDED: Timestamp of last detection
+  const debugImageRef = useRef<cv.Mat | null>(null); // <<< ADDED: Ref to hold debug image
   const justBecameStillRef = useRef<boolean>(false); // <<< Track if we just entered stillness
   const [detectedTip, setDetectedTip] = useState<Point | null>(null); // State for tip coords
+  const largestContourRef = useRef<cv.Mat | null>(null); // <<< ADDED: Store largest contour for drawing
+  const contourCentroidRef = useRef<Point | null>(null); // <<< ADDED: Store centroid for drawing
 
   const [isConnected, setIsConnected] = useState(false);
   const [isCalibrating, setIsCalibrating] = useState(false);
@@ -138,12 +235,14 @@ const DartDetector: React.FC<DartDetectorProps> = ({ onDetectionUpdate }) => {
 
     wsRef.current.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
+        console.log("WebSocket message received (ArrayBuffer)");
         const blob = new Blob([event.data], { type: 'image/jpeg' });
         const objectUrl = URL.createObjectURL(blob);
         const img = imageRef.current; // Get the reference to the <img> element
 
         // Important: Define onload *before* setting src
         img.onload = () => {
+          console.log("img.onload triggered");
           // console.log(`Image loaded into img element: ${img.naturalWidth}x${img.naturalHeight}`);
           if (dimensions.width !== img.naturalWidth || dimensions.height !== img.naturalHeight) {
             setDimensions({ width: img.naturalWidth, height: img.naturalHeight });
@@ -180,11 +279,18 @@ const DartDetector: React.FC<DartDetectorProps> = ({ onDetectionUpdate }) => {
   const detectDart = useCallback((frameAfter: cv.Mat, frameBefore: cv.Mat) => {
     console.log("Attempting dart detection...");
     setDetectedTip(null); // Reset previous detection
-    let diff = new cv.Mat();
-    let gray = new cv.Mat();
-    let thresh = new cv.Mat();
-    let contours = new cv.MatVector();
-    let hierarchy = new cv.Mat();
+    // Clear previous debug image and stored contour/centroid
+    debugImageRef.current?.delete();
+    debugImageRef.current = null;
+    largestContourRef.current?.delete();
+    largestContourRef.current = null;
+    contourCentroidRef.current = null;
+
+    const diff = new cv.Mat();
+    const gray = new cv.Mat();
+    const thresh = new cv.Mat();
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
 
     try {
       // 1. Difference
@@ -192,36 +298,78 @@ const DartDetector: React.FC<DartDetectorProps> = ({ onDetectionUpdate }) => {
       cv.cvtColor(diff, gray, cv.COLOR_RGBA2GRAY);
 
       // 2. Threshold
-      cv.threshold(gray, thresh, 25, 255, cv.THRESH_BINARY);
+      cv.threshold(gray, thresh, 15, 255, cv.THRESH_BINARY);
 
       // 3. Find Contours
       cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
+      // --- Debug: Draw all contours yellow onto a copy of thresh --- 
+      const debugMat = new cv.Mat();
+      cv.cvtColor(thresh, debugMat, cv.COLOR_GRAY2RGBA); // Convert thresh to RGBA for color drawing
+      const yellow = new cv.Scalar(255, 255, 0, 255);
+      for (let i = 0; i < contours.size(); i++) {
+          cv.drawContours(debugMat, contours, i, yellow, 1, cv.LINE_8, hierarchy, 0);
+      }
+      // --- End Debug --- 
+
       // 4. Filter Contours (find largest by area)
-      let largestContour = null;
+      let largestContour: cv.Mat | null = null;
       let maxArea = 0;
+      let largestContourIndex = -1; // Store index for potential drawing later
       for (let i = 0; i < contours.size(); ++i) {
         const contour = contours.get(i);
         const area = cv.contourArea(contour);
-        if (area > maxArea && area > 50) { // Filter small noise, find largest significant change
+        if (area > 500 && area < 2000 && area > maxArea) { 
           maxArea = area;
           largestContour?.delete(); // Delete previous largest if exists
           largestContour = contour.clone();
+          largestContourIndex = i;
         } else {
           contour.delete(); // Delete contours we don't keep
         }
       }
 
+      // --- Store largest contour and calculate/store centroid for drawing --- 
+      largestContourRef.current?.delete(); // Clear previous ref data
+      largestContourRef.current = largestContour ? largestContour.clone() : null;
+      contourCentroidRef.current = null; // Reset centroid
+      // --- End store --- 
+
       if (largestContour) {
         console.log("Potential dart contour found, area:", maxArea);
+
+        // --- Debug: Draw largest contour magenta ON the debug Mat --- 
+        if(largestContourIndex !== -1) { // Check if we found one
+            const magenta = new cv.Scalar(255, 0, 255, 255);
+            // Draw the largest contour ON the debugMat using its index
+            cv.drawContours(debugMat, contours, largestContourIndex, magenta, 2); // Thicker line
+        }
+        // Let's store debugMat in the ref for drawing in processFrame
+        debugImageRef.current?.delete(); // Delete previous debug image
+        debugImageRef.current = debugMat.clone(); // Store the image with yellow/magenta contours
+        // --- End Debug --- 
 
         // 5. Find Tip (using helper function)
         const tip = findDartTip(largestContour);
 
+        // --- Calculate and store centroid for drawing --- 
+        const M = cv.moments(largestContour, false);
+        if (M.m00 !== 0) {
+            contourCentroidRef.current = { x: M.m10 / M.m00, y: M.m01 / M.m00 };
+        }
+        // --- End centroid --- 
+
         if (tip) {
             console.log("Detected tip at:", tip);
             setDetectedTip(tip);
-            // We'll draw this tip in the main processFrame loop
+            lastDetectionTimeRef.current = performance.now(); // Update last detection time
+
+            // --- Calculate Score and Update Parent --- 
+            const result = getScoreFromCoords(tip);
+            console.log("Calculated Score:", result);
+            onDetectionUpdate([result]); // Pass score up to parent component
+            // --- End Score Calculation --- 
+
         } else {
             console.log("Could not determine tip from contour.");
         }
@@ -239,6 +387,7 @@ const DartDetector: React.FC<DartDetectorProps> = ({ onDetectionUpdate }) => {
       thresh.delete();
       contours.delete();
       hierarchy.delete();
+      // Keep debugMat alive via the ref, it will be cleaned up next detection or on unmount
     }
 
     // Important: Update the 'before' frame reference for the *next* throw
@@ -250,164 +399,246 @@ const DartDetector: React.FC<DartDetectorProps> = ({ onDetectionUpdate }) => {
   // --- Frame Processing ---
   const processFrame = useCallback(() => {
     processingScheduled.current = false;
-    if (!cvLoaded || !isConnected || isCalibrating || !canvasRef.current || !imageRef.current.complete || imageRef.current.naturalHeight === 0) {
-       // Ensure image element has loaded data before trying to read it
-      return;
-    }
-    const now = performance.now();
-    if (now - lastFrameTime.current < 200) {
-      if (!processingScheduled.current) {
-        if (processFrameRef.current) {
-           requestAnimationFrame(processFrameRef.current);
-           processingScheduled.current = true;
-        }
-      }
-      return;
-    }
-    lastFrameTime.current = now;
-    
-    // --- Image Processing & Drawing --- 
+    console.log("processFrame called");
+
+    if (!cvLoaded) { console.log("processFrame exiting: cv not loaded"); return; }
+    if (!canvasRef.current) { console.log("processFrame exiting: canvasRef missing"); return; }
+    if (!isConnected) { console.log("processFrame exiting: not connected"); return; }
+
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const img = imageRef.current; // Use the loaded image
 
-    let src = null;
-    let warpDst = null;
-    let homographyMat = null;
+    if (!ctx) { console.log("processFrame exiting: no canvas context"); return; }
+    if (img.naturalWidth === 0) { console.log("processFrame exiting: image naturalWidth is 0"); return; }
+
+    // Check if source dimensions match calibration *only if* calibration exists
+    if (calibrationData && 
+        (calibrationData.sourceDimensions.width !== img.naturalWidth ||
+         calibrationData.sourceDimensions.height !== img.naturalHeight)) {
+        console.warn("Camera dimensions changed since calibration. Recalibration needed.");
+        setError("Camera dimensions changed. Please recalibrate.");
+        resetCalibration(); // Invalidate current calibration
+        // Do not return here, allow raw feed to show
+    }
+
+    const startTime = performance.now();
+    let src: cv.Mat | null = null;
+    const dst: cv.Mat | null = null; // This likely should be removed or used if intended
+    let M: cv.Mat | null = null;
+    let warped: cv.Mat | null = null;
+    let diffWarped: cv.Mat | null = null;
+    let grayWarped: cv.Mat | null = null;
 
     try {
-      // 1. Get image from the loaded <img> element
-      src = cv.imread(imageRef.current);
+      // Read image from <img> into cv.Mat
+      src = cv.imread(img);
+      console.log("imread successful");
 
-      // 2. Decide what to display based on state
+      // If calibrating, draw original feed and points
       if (isCalibrating) {
-        // DURING CALIBRATION: Always show the original source image
+        console.log("Drawing raw feed (calibrating)");
+        canvas.width = dimensions.width;
+        canvas.height = dimensions.height;
         cv.imshow(canvas, src);
-        // The calibration points/prompts overlay is handled by the other useEffect
-      }
-      else if (calibrationData?.homographyMatrix) {
-        // CALIBRATED & NOT CALIBRATING: Show warped image
-        warpDst = new cv.Mat();
-        homographyMat = cv.matFromArray(3, 3, cv.CV_64F, calibrationData.homographyMatrix);
-        let dsize = new cv.Size(CALIBRATION_TARGET_SIZE, CALIBRATION_TARGET_SIZE);
-        cv.warpPerspective(src, warpDst, homographyMat, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
-        
-        // <<< Explicitly set canvas size for warped view >>>
-        if (canvas.width !== CALIBRATION_TARGET_SIZE || canvas.height !== CALIBRATION_TARGET_SIZE) {
-          canvas.width = CALIBRATION_TARGET_SIZE;
-          canvas.height = CALIBRATION_TARGET_SIZE;
-        }
+        // Draw already clicked points
+        ctx.fillStyle = 'red';
+        clickedPoints.forEach(p => {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+          ctx.fill();
+        });
 
-        // --- Stillness Detection & Dart Detection Trigger ---
-        let diff = null;
-        let grayDiff = null;
-        const STILLNESS_THRESHOLD = 2.0;
+      } else if (calibrationData?.homographyMatrix) {
+         console.log("Drawing warped feed (calibrated)");
+        // Perform perspective correction
+        M = cv.matFromArray(3, 3, cv.CV_64F, calibrationData.homographyMatrix);
+        warped = new cv.Mat();
+        const dsize = new cv.Size(CALIBRATION_TARGET_SIZE, CALIBRATION_TARGET_SIZE);
+        cv.warpPerspective(src, warped, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
 
-        if (prevWarpedFrameRef.current && !prevWarpedFrameRef.current.empty()) {
-            diff = new cv.Mat();
-            grayDiff = new cv.Mat();
-            cv.absdiff(warpDst, prevWarpedFrameRef.current, diff);
-            cv.cvtColor(diff, grayDiff, cv.COLOR_RGBA2GRAY);
-            const meanDiff = cv.mean(grayDiff)[0];
+        // Display the warped image
+        canvas.width = CALIBRATION_TARGET_SIZE;
+        canvas.height = CALIBRATION_TARGET_SIZE;
+        cv.imshow(canvas, warped);
 
-            if (meanDiff < STILLNESS_THRESHOLD) {
-                if (!isStill) {
-                    setIsStill(true);
-                    justBecameStillRef.current = true;
-                    console.log("Scene became still.");
-                    // Don't clone to beforeDart ref here, happens in detectDart
-                    // Clone to afterDart ref
-                    stillFrameAfterDartRef.current?.delete();
-                    stillFrameAfterDartRef.current = warpDst.clone();
+        // Stillness Detection Logic (Using Mean Intensity Difference)
+        const motionThreshold = 2.5; // <<< Lowered threshold
+        const detectionCooldownMs = 1000; // <<< ADDED: Cooldown period (1 second)
+        let currentIsStill = isStill; // Assume still unless proven otherwise or in cooldown
 
-                    // <<< TRIGGER DETECTION >>>
-                    if (stillFrameBeforeDartRef.current && !stillFrameBeforeDartRef.current.empty() && stillFrameAfterDartRef.current && !stillFrameAfterDartRef.current.empty()) {
-                        detectDart(stillFrameAfterDartRef.current, stillFrameBeforeDartRef.current);
-                    } else {
-                        console.log("Need previous still frame to detect dart.");
-                        // If this is the *first* still frame after launch/reset, capture it as the baseline
-                        stillFrameBeforeDartRef.current?.delete();
-                        stillFrameBeforeDartRef.current = warpDst.clone();
-                    }
+        // Only check for motion if not in cooldown
+        const now = performance.now();
+        if (now - lastDetectionTimeRef.current > detectionCooldownMs) {
+            if (prevWarpedFrameRef.current) {
+              diffWarped = new cv.Mat();
+              grayWarped = new cv.Mat();
+              cv.absdiff(warped, prevWarpedFrameRef.current, diffWarped);
+              cv.cvtColor(diffWarped, grayWarped, cv.COLOR_RGBA2GRAY);
+              const meanDiff = cv.mean(grayWarped)[0]; 
+              const calculatedIsStill = meanDiff < motionThreshold; // Calculate actual stillness
+              // console.log(`Stillness check: meanDiff = ${meanDiff.toFixed(2)}, threshold = ${motionThreshold.toFixed(2)}, currentIsStill = ${calculatedIsStill}`); // Can disable if noisy
+              console.log(`[Stillness Check] meanDiff: ${meanDiff.toFixed(3)}, threshold: ${motionThreshold}, calculatedIsStill: ${calculatedIsStill}`); // <<< ADDED Always log
 
-                } else {
-                    justBecameStillRef.current = false;
-                }
-            } else {
-                 if (isStill) setIsStill(false);
-                 justBecameStillRef.current = false;
+              // Only update state if it changed
+              if (calculatedIsStill !== isStill) {
+                  console.log(`Stillness state changing from ${isStill} to ${calculatedIsStill}`); 
+                  setIsStill(calculatedIsStill);
+                  currentIsStill = calculatedIsStill; // Update local variable for transition check
+              } else {
+                  currentIsStill = isStill; // Keep local var consistent if no change
+              }
             }
-            diff.delete();
-            grayDiff.delete();
+            // No else needed - if no prev frame, it stays in initial state (usually still)
         } else {
-             setIsStill(false);
-             justBecameStillRef.current = false;
-             // Capture first frame as baseline if none exists
-             if (!stillFrameBeforeDartRef.current || stillFrameBeforeDartRef.current.empty()) {
-                console.log("Capturing initial baseline frame.");
-                stillFrameBeforeDartRef.current?.delete();
-                stillFrameBeforeDartRef.current = warpDst?.clone(); // Clone if warpDst exists
-             }
+            // console.log("In detection cooldown..."); // Optional log
+            // If in cooldown, force currentIsStill to true to prevent re-triggering
+            currentIsStill = true; 
+            if (!isStill) {
+                // If state somehow became false during cooldown, force it back to true
+                 console.log("Stillness state forced to TRUE due to cooldown.");
+                 setIsStill(true);
+            }
         }
 
-        prevWarpedFrameRef.current?.delete();
-        if (warpDst) prevWarpedFrameRef.current = warpDst.clone();
+        // Dart detection triggering logic (Check state change, *not* local variable directly)
+        // We use the updated isStill state from the previous step (or forced true during cooldown)
+        if (currentIsStill && !isStill && (now - lastDetectionTimeRef.current > detectionCooldownMs)) { // Transitioned from NOT still to STILL (and not in cooldown)
+          console.log("Transition: NOT Still -> STILL");
+          if (stillFrameBeforeDartRef.current) {
+             console.log("Calling detectDart... (Detected stillness after motion)");
+             stillFrameAfterDartRef.current?.delete();
+             stillFrameAfterDartRef.current = warped.clone(); // Capture frame AFTER throw
+             detectDart(stillFrameAfterDartRef.current, stillFrameBeforeDartRef.current);
+          } else {
+            console.log("Board became still, but no 'before' frame captured yet. Storing this as the first still frame.");
+            stillFrameBeforeDartRef.current?.delete(); // Ensure cleanup if somehow exists
+            stillFrameBeforeDartRef.current = warped.clone(); // Store the first still frame
+          }
+        } else if (!currentIsStill && isStill) { // Transitioned from STILL to NOT still
+          console.log("Transition: STILL -> NOT Still (Motion detected)");
+          // If we had a valid 'before' frame, keep it. If not, capture this moment before motion.
+          if (!stillFrameBeforeDartRef.current) {
+            console.log("Capturing frame just before motion started as 'before' frame.");
+            stillFrameBeforeDartRef.current?.delete();
+            // Use the *previous* frame (the last known still one) as the 'before' frame
+            stillFrameBeforeDartRef.current = prevWarpedFrameRef.current?.clone() || null; 
+          } else {
+              console.log("Motion detected, already have a 'before' frame.");
+          }
+        } else if (currentIsStill && isStill) {
+             // console.log("Stillness continues..."); // Optional log, can be noisy
+        } else { // !currentIsStill && !isStill
+             // console.log("Motion continues..."); // Optional log, can be noisy
+        }
 
-        // --- Display --- 
-        cv.imshow(canvas, warpDst);
-        
-        // Draw stillness indicator
-        ctx.font = '14px Arial';
-        ctx.fillStyle = isStill ? 'lime' : 'red';
-        ctx.textAlign = 'left';
-        ctx.fillText(isStill ? 'Still' : 'Moving', 10, 20);
-        
-        // <<< Draw Detected Tip >>>
+        // Update previous frame reference *after* comparisons
+        prevWarpedFrameRef.current?.delete();
+        prevWarpedFrameRef.current = warped.clone();
+
+        // --- Debug: Draw the debug image if it exists --- 
+        if (debugImageRef.current && !debugImageRef.current.empty()) {
+            // Blend the debug image (yellow contours) onto the canvas
+            // We need to ensure canvas size matches debug image size (500x500)
+            if (canvas.width !== CALIBRATION_TARGET_SIZE || canvas.height !== CALIBRATION_TARGET_SIZE) {
+                 canvas.width = CALIBRATION_TARGET_SIZE;
+                 canvas.height = CALIBRATION_TARGET_SIZE;
+                 // May need to redraw warped here if canvas size changed
+                 cv.imshow(canvas, warped);
+            }
+            
+            // Draw the debug Mat onto a temporary canvas to get ImageData
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = debugImageRef.current.cols;
+            tempCanvas.height = debugImageRef.current.rows;
+            cv.imshow(tempCanvas, debugImageRef.current);
+            const debugCtx = tempCanvas.getContext('2d');
+            if (debugCtx) {
+                const debugImageData = debugCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                // Make yellow pixels semi-transparent for blending
+                const data = debugImageData.data;
+                for (let i = 0; i < data.length; i += 4) {
+                    // If it's yellow (or close to it from drawing), reduce alpha
+                    if (data[i] > 200 && data[i+1] > 200 && data[i+2] < 50) { 
+                        data[i+3] = 150; // Semi-transparent alpha
+                    }
+                    // Keep black pixels fully transparent if desired (optional)
+                    // if (data[i] === 0 && data[i+1] === 0 && data[i+2] === 0) { data[i+3] = 0; }
+                }
+                ctx.putImageData(debugImageData, 0, 0);
+            }
+        }
+        // --- End Debug: Draw debug image ---
+
+        // --- Draw Largest Contour Outline (Magenta) --- 
+        if (largestContourRef.current && !largestContourRef.current.empty()) {
+            const magenta = new cv.Scalar(255, 0, 255, 255); 
+            // Create a temporary MatVector to draw the single contour
+            const contourVec = new cv.MatVector();
+            contourVec.push_back(largestContourRef.current);
+            cv.drawContours(warped, contourVec, 0, magenta, 2); // Draw directly on warped image
+            contourVec.delete();
+        }
+        // --- End Draw Largest Contour ---
+
+        // --- Draw Centroid (Green) --- 
+        if (contourCentroidRef.current) {
+            ctx.fillStyle = 'lime'; // Bright green
+            ctx.beginPath();
+            ctx.arc(contourCentroidRef.current.x, contourCentroidRef.current.y, 5, 0, 2 * Math.PI);
+            ctx.fill();
+        }
+        // --- End Draw Centroid ---
+
+        // Draw detected tip
         if (detectedTip) {
-             ctx.fillStyle = 'cyan';
-             ctx.beginPath();
-             ctx.arc(detectedTip.x, detectedTip.y, 5, 0, 2 * Math.PI);
-             ctx.fill();
-             ctx.strokeText(`Tip: (${detectedTip.x}, ${detectedTip.y})`, detectedTip.x + 8, detectedTip.y + 3);
+          ctx.fillStyle = 'cyan';
+          ctx.beginPath();
+          ctx.arc(detectedTip.x, detectedTip.y, 5, 0, 2 * Math.PI);
+          ctx.fill();
         }
 
       } else {
-        // NOT CALIBRATED & NOT CALIBRATING: Show original image + text
-        // <<< Restore original canvas size if needed >>>
+        // Connected, but not calibrating and not yet calibrated: Show raw feed
+        console.log("Drawing raw feed (connected, not calibrated)");
         if (canvas.width !== dimensions.width || canvas.height !== dimensions.height) {
             canvas.width = dimensions.width;
             canvas.height = dimensions.height;
         }
-        // Reset stillness state and refs if not calibrated
-        if (isStill) setIsStill(false);
-        prevWarpedFrameRef.current?.delete();
-        prevWarpedFrameRef.current = null;
-        stillFrameBeforeDartRef.current?.delete();
-        stillFrameBeforeDartRef.current = null;
-        stillFrameAfterDartRef.current?.delete();
-        justBecameStillRef.current = false;
-        if (detectedTip) setDetectedTip(null); // <<< Reset detected tip state
-
         cv.imshow(canvas, src);
-        ctx.font = '16px Arial';
-        ctx.fillStyle = 'red';
-        ctx.textAlign = 'center';
-        ctx.fillText('Calibration Required', canvas.width / 2, canvas.height / 2);
+        // Optional: Add text overlay indicating calibration is needed
+        if (ctx) {
+           ctx.font = '16px Arial';
+           ctx.fillStyle = 'yellow';
+           ctx.textAlign = 'center';
+           ctx.fillText('Calibration Needed', canvas.width / 2, 30);
+        }
+         // Reset stillness state and refs if not calibrated
+         if (isStill) setIsStill(false);
+         prevWarpedFrameRef.current?.delete();
+         prevWarpedFrameRef.current = null;
+         stillFrameBeforeDartRef.current?.delete();
+         stillFrameBeforeDartRef.current = null;
+         stillFrameAfterDartRef.current?.delete();
+         stillFrameAfterDartRef.current = null;
+         justBecameStillRef.current = false;
+         if (detectedTip) setDetectedTip(null); // Reset detected tip state
       }
 
-      // 3. TODO: Future steps...
-      
     } catch (err) {
       console.error("OpenCV processing error:", err);
       setError('Error during image processing.');
     } finally {
       // Clean up OpenCV Mats
       src?.delete();
-      warpDst?.delete();
-      homographyMat?.delete();
+      dst?.delete(); // Cleanup, though it was never assigned
+      M?.delete();
+      warped?.delete();
+      diffWarped?.delete();
+      grayWarped?.delete();
     }
 
-  }, [cvLoaded, isConnected, isCalibrating, calibrationData, dimensions, isStill, detectDart, detectedTip]);
+  }, [cvLoaded, isConnected, isCalibrating, calibrationData, dimensions, detectDart, detectedTip, clickedPoints, isStill]);
 
   // Update the ref whenever the memoized processFrame function changes
   useEffect(() => {
@@ -550,6 +781,14 @@ const DartDetector: React.FC<DartDetectorProps> = ({ onDetectionUpdate }) => {
         });
     }
   }, [isCalibrating, clickedPoints, dimensions]); // Rerun when points/dimensions change
+
+  // Cleanup debug image on unmount
+  useEffect(() => {
+      return () => {
+          debugImageRef.current?.delete();
+          largestContourRef.current?.delete(); // <<< ADDED Cleanup
+      }
+  }, []);
 
   // --- Render ---
   const currentPrompt = isCalibrating ? CALIBRATION_PROMPTS[clickedPoints.length] : null;
