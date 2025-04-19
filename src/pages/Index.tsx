@@ -4,6 +4,7 @@ import Dartboard from "../components/Dartboard";
 import GameControls from "../components/GameControls";
 import PlayerScores from "../components/PlayerScores";
 import GameFinished from "../components/GameFinished";
+import DartDetector from '../components/DartDetector';
 
 const GameScreen = () => {
   const { gameFinished, getCurrentPlayer } = useGameStore();
@@ -27,14 +28,16 @@ const GameScreen = () => {
           <PlayerScores />
         </div>
         
-        {/* Center column - Dartboard */}
-        <div className="md:order-2 md:col-span-2">
+        {/* Center column - Dartboard & Controls */}
+        <div className="md:order-2 md:col-span-2 flex flex-col gap-4">
           <Dartboard />
-          
-          {/* Game controls */}
-          <div className="mt-4">
-            <GameControls />
-          </div>
+          <GameControls />
+
+          {/* Add the Dart Detector Component */} 
+          <DartDetector onDetectionUpdate={(scores) => {
+            // TODO: Handle the detected scores (e.g., update game state)
+            console.log("Detected scores:", scores);
+          }} />
           
           {/* Game finished overlay */}
           {gameFinished && (

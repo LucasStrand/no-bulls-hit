@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Camera Stream Sender</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: sans-serif; padding: 1em; }
+        video, canvas { max-width: 100%; border: 1px solid #ccc; }
+        canvas { display: none; } /* Hide the canvas used for grabbing frames */
+        #status { margin-top: 1em; font-weight: bold; }
+        button { padding: 0.5em 1em; margin-top: 0.5em; }
+    </style>
+</head>
+<body>
+    <h1>Camera Stream Sender</h1>
+    <p>Point this phone's camera at the dartboard.</p>
+
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+
+    <div id="status">Disconnected</div>
+    <button id="connectButton">Connect & Start Streaming</button>
+    <button id="stopButton" disabled>Stop Streaming</button>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const statusDiv = document.getElementById('status');
+        const connectButton = document.getElementById('connectButton');
+        const stopButton = document.getElementById('stopButton');
+        const ctx = canvas.getContext('2d');
+
+        let stream = null;
+        let ws = null;
+        let intervalId = null;
+        const DESKTOP_IP = prompt("Enter Desktop IP address:", "192.168.x.x"); // Replace with your desktop IP
+        const WS_URL = `wss://${DESKTOP_IP}:8081`;
+        const FRAME_RATE = 10; // Send X frames per second
+
+        async function startCamera() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1280 }, // Can adjust resolution
+                        height: { ideal: 720 }
+                    }
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                };
+                return true;
+            } catch (err) {
+                statusDiv.textContent = `Error accessing camera: ${err.message}`;
+                console.error(err);
+                return false;
+            }
+        }
+
+        function connectWebSocket() {
+            if (!DESKTOP_IP) {
+                statusDiv.textContent = "Desktop IP not entered.";
+                return;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) return; // Already connected
+
+            ws = new WebSocket(WS_URL);
+            statusDiv.textContent = `Connecting to ${WS_URL}...`;
+
+            ws.onopen = () => {
+                statusDiv.textContent = 'Connected. Sending handshake...';
+                // Send handshake message
+                try {
+                    ws.send(JSON.stringify({ type: 'camera-init' }));
+                    statusDiv.textContent = 'Handshake sent. Starting stream...';
+                    connectButton.disabled = true;
+                    stopButton.disabled = false;
+                    startStreaming();
+                } catch (e) {
+                    console.error("Failed to send handshake:", e);
+                    statusDiv.textContent = 'Failed to send handshake.';
+                    ws.close();
+                }
+            };
+
+            ws.onclose = () => {
+                statusDiv.textContent = 'Disconnected. Press Connect to restart.';
+                stopStreaming();
+                connectButton.disabled = false;
+                stopButton.disabled = true;
+                ws = null;
+            };
+
+            ws.onerror = (error) => {
+                statusDiv.textContent = `WebSocket Error: ${error.message || 'Could not connect'}`;
+                console.error('WebSocket Error: ', error);
+                stopStreaming();
+                connectButton.disabled = false;
+                stopButton.disabled = true;
+                ws = null;
+            };
+        }
+
+        function startStreaming() {
+            if (intervalId) clearInterval(intervalId); // Clear previous interval if any
+
+            intervalId = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN && video.readyState >= video.HAVE_CURRENT_DATA) {
+                    try {
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        // Convert canvas to Blob, then send ArrayBuffer
+                        canvas.toBlob(async (blob) => {
+                            if (blob && ws && ws.readyState === WebSocket.OPEN) {
+                                try {
+                                    const arrayBuffer = await blob.arrayBuffer();
+                                    ws.send(arrayBuffer);
+                                } catch (bufferError) {
+                                    console.error("Error converting blob to buffer or sending:", bufferError);
+                                }
+                            }
+                        }, 'image/jpeg', 0.92); // Increased JPEG quality to 0.92
+                    } catch (drawError) {
+                        console.error("Error drawing canvas or creating blob:", drawError);
+                    }
+                }
+            }, 1000 / FRAME_RATE);
+        }
+
+        function stopStreaming() {
+            if (intervalId) {
+                clearInterval(intervalId);
+                intervalId = null;
+            }
+            if (ws) {
+                ws.close();
+            }
+            statusDiv.textContent = 'Streaming stopped.';
+        }
+
+        // Event Listeners
+        connectButton.onclick = async () => {
+            const cameraStarted = await startCamera();
+            if (cameraStarted) {
+                connectWebSocket();
+            }
+        };
+
+        stopButton.onclick = () => {
+            stopStreaming();
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+                video.srcObject = null;
+            }
+             statusDiv.textContent = 'Camera and stream stopped.';
+             connectButton.disabled = false;
+             stopButton.disabled = true;
+        };
+
+         // Stop stream on page close
+        window.addEventListener('beforeunload', stopStreaming);
+
+    </script>
+</body>
+</html> 
