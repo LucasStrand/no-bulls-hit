@@ -1,4 +1,3 @@
-
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { 
@@ -148,9 +147,9 @@ export const useGameStore = create<GameStore>()(
           });
           
           // If it was the last dart of the turn, end turn
-          if (dartsRemaining === 1) {
-            get().endTurn();
-          }
+          // if (dartsRemaining === 1) { // Removed auto end turn
+          //   get().endTurn();
+          // }
           return;
         }
         
@@ -205,9 +204,9 @@ export const useGameStore = create<GameStore>()(
         });
         
         // If it was the last dart of the turn, end turn
-        if (dartsRemaining === 1) {
-          get().endTurn();
-        }
+        // if (dartsRemaining === 1) { // Removed auto end turn
+        //   get().endTurn();
+        // }
       },
       
       endTurn: () => {
@@ -257,6 +256,11 @@ export const useGameStore = create<GameStore>()(
           dartsRemaining: DEFAULT_DARTS_PER_TURN,
           currentTurn: [],
         });
+        
+        // If it was the last dart of the turn, end turn
+        // if (dartsRemaining === 1) { // Removed auto end turn
+        //   get().endTurn();
+        // }
       },
       
       undoLastDart: () => {

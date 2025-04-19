@@ -1,10 +1,8 @@
-
 import { useGameStore } from "../store/gameStore";
 import GameSetup from "../components/GameSetup";
 import Dartboard from "../components/Dartboard";
 import GameControls from "../components/GameControls";
 import PlayerScores from "../components/PlayerScores";
-import CurrentTurn from "../components/CurrentTurn";
 import GameFinished from "../components/GameFinished";
 
 const GameScreen = () => {
@@ -15,7 +13,7 @@ const GameScreen = () => {
     <div className="container px-4 py-6 max-w-5xl mx-auto">
       {/* Game header */}
       <header className="mb-6 text-center">
-        <h1 className="text-2xl font-bold">Bullseye Blitz Tracker</h1>
+        <h1 className="text-2xl font-bold">Dart Score Tracker</h1>
         {!gameFinished && currentPlayer && (
           <div className="mt-2 text-muted-foreground">
             <span className="font-medium text-primary">{currentPlayer.name}'s</span> turn
@@ -37,9 +35,6 @@ const GameScreen = () => {
           <div className="mt-4">
             <GameControls />
           </div>
-          
-          {/* Current turn display */}
-          <CurrentTurn />
           
           {/* Game finished overlay */}
           {gameFinished && (

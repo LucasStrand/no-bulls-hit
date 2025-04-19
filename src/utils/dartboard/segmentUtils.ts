@@ -1,4 +1,3 @@
-
 import { DARTBOARD_CONFIG, DARTBOARD_NUMBERS } from './dartboardConfig';
 
 export const generateSegments = () => {
@@ -64,7 +63,7 @@ export const generateSegments = () => {
         d: generateArcPath(OUTER_BULL_RADIUS, OUTER_BORDER_RADIUS),
         fill: isEven ? "#f2f2e4" : "#222",
         stroke: "none",
-        dataSegment: number
+        datasegment: number
       }
     });
 
@@ -76,8 +75,8 @@ export const generateSegments = () => {
         fill: i % 2 === 0 ? "#2bb33b" : "#d10937", // Green and Red
         stroke: "#000",
         strokeWidth: WIRE_WIDTH * 0.5,
-        dataSegment: number,
-        dataMultiplier: 3
+        datasegment: number,
+        datamultiplier: 3
       }
     });
 
@@ -89,8 +88,8 @@ export const generateSegments = () => {
         fill: i % 2 === 0 ? "#2bb33b" : "#d10937", // Green and Red
         stroke: "#000",
         strokeWidth: WIRE_WIDTH * 0.5,
-        dataSegment: number,
-        dataMultiplier: 2
+        datasegment: number,
+        datamultiplier: 2
       }
     });
 
@@ -118,8 +117,8 @@ export const generateSegments = () => {
       fill: "#2bb33b", // Green outer bull
       stroke: "#000",
       strokeWidth: WIRE_WIDTH,
-      dataSegment: 25,
-      dataMultiplier: 1
+      datasegment: 25,
+      datamultiplier: 1
     }
   });
 
@@ -132,8 +131,8 @@ export const generateSegments = () => {
       fill: "#d10937", // Red bullseye
       stroke: "#000",
       strokeWidth: WIRE_WIDTH,
-      dataSegment: 25,
-      dataMultiplier: 2
+      datasegment: 25,
+      datamultiplier: 2
     }
   });
 

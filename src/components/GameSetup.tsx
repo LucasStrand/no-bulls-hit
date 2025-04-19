@@ -41,7 +41,7 @@ const GameSetup = () => {
     <div className="flex justify-center items-center min-h-screen p-4">
       <Card className="w-full max-w-md shadow-lg">
         <CardHeader>
-          <CardTitle className="text-2xl font-bold text-center">Bullseye Blitz Tracker</CardTitle>
+          <CardTitle className="text-2xl font-bold text-center">Dart Score Tracker</CardTitle>
           <CardDescription className="text-center">Configure your darts game</CardDescription>
         </CardHeader>
         

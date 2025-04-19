@@ -1,9 +1,11 @@
-
 import { useGameStore } from "../store/gameStore";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { ArrowLeftCircle, SkipBack, SkipForward, RotateCcw } from "lucide-react";
 import { useToast } from "../hooks/use-toast";
+// import PlayerScores from "./PlayerScores";
+import CurrentTurn from "./CurrentTurn";
+// import { ScoreHistory } from "./ScoreHistory";
 
 const GameControls = () => {
   const { 
@@ -81,6 +83,9 @@ const GameControls = () => {
           <RotateCcw size={20} />
         </Button>
       </div>
+      {/* <PlayerScores /> */}
+      <CurrentTurn />
+      {/* <ScoreHistory /> */}
     </Card>
   );
 };
